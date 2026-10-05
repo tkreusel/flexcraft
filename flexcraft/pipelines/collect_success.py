@@ -34,11 +34,21 @@ with open(f"{opt.out_path}/success.csv", "wt") as out_f, open(f"{opt.out_path}/s
                 out_f.write(header)
                 header_done = True
             if opt.all_relaxed == "True":
-                reason_offset = header.split(",").index("reason") - 1
+                columns = header.strip().split(",")
+                # the column is named `failure_reason` by setup_files,
+                # `reason` by the raw BindCraftProperties filter
+                reason_key = None
+                for candidate in ("failure_reason", "reason"):
+                    if candidate in columns:
+                        reason_key = candidate
+                        break
+                # offset by 1 to account for the prepended `run` column
+                reason_offset = columns.index(reason_key) - 1 if reason_key else None
                 for line in in_f:
-                    reason = line.strip().split(",")[reason_offset]
-                    if "designability" in reason:
-                        continue
+                    if reason_offset is not None:
+                        reason = line.strip().split(",")[reason_offset]
+                        if "designability" in reason:
+                            continue
                     out_f.write(subdir + "," + line)
             else:
                 for line in in_f:
@@ -47,6 +57,8 @@ with open(f"{opt.out_path}/success.csv", "wt") as out_f, open(f"{opt.out_path}/s
             success_path = f"{opt.in_path}/{subdir}/relaxed/"
         else:
             success_path = f"{opt.in_path}/{subdir}/success/"
+        if not os.path.isdir(success_path):
+            continue
         for file_name in os.listdir(success_path):
             if file_name.startswith("."):
                 continue
@@ -63,6 +75,6 @@ with open(f"{opt.out_path}/success.csv", "wt") as out_f, open(f"{opt.out_path}/s
             }
             if opt.collect_chains != "all":
                 sequence = ":".join([chains[c] for c in opt.collect_chains.split(",")])
-            shutil.copyfile(f"{opt.in_path}/{subdir}/success/{file_name}",
+            shutil.copyfile(design_path,
                             f"{opt.out_path}/designs/{subdir}_{file_name}")
             fa_f.write(f">{subdir}_{file_name}\n{sequence}\n")
