@@ -129,6 +129,41 @@ class AF3LikeResult(eqx.Module):
         contact_score /= jnp.maximum(1, source_index.sum())
         return contact_score
 
+    def chain_contact_frequency(self, target_chain=0, binder_chain=1,
+                                contact_distance=8.0) -> jax.Array:
+        """Per-residue frequency with which each target_chain residue contacts
+        binder_chain, aggregated across all sampled structures.
+        Output is a 1D array of length L (full sequence) with values between 0
+        and 1; entries outside target_chain are 0.
+        Contact frequency is computed as the fraction of sampled structures in
+        which the contact atom (pseudo-CB) of the target residue is within
+        contact_distance of the contact atom of any binder_chain residue.
+
+        Kept byte-for-byte equivalent to JoltzResult.chain_contact_frequency:
+        cross-model fingerprint comparisons are only meaningful if both sides
+        run the same estimator, so do not "improve" one copy alone.
+        """
+        atom24, _ = self.atom24_samples
+        if self.is_single_sample:
+            atom24 = atom24[None]                          # (S, L, 24, 3), S == 1
+        # via the property, NOT data["features"]["mol_type"]: Protenix has no
+        # such feature key and ProtenixResult overrides mol_type to supply it.
+        mol_type = self.mol_type
+        contact_atom = jax.vmap(get_contact_atom, (0, None), 0)(atom24, mol_type)  # (S, L, 3)
+
+        chain = self.chain_index
+        is_target = chain == target_chain                  # (L,)
+        is_binder = chain == binder_chain                  # (L,)
+        pair_mask = is_target[:, None] & is_binder[None, :]  # (L, L)
+
+        def per_sample(contact_atom):                      # (L, 3)
+            dist = jnp.linalg.norm(
+                contact_atom[:, None, :] - contact_atom[None, :, :], axis=-1)  # (L, L)
+            return ((dist < contact_distance) & pair_mask).any(axis=1)        # (L,)
+
+        contacts = jax.vmap(per_sample, in_axes=0, out_axes=0)(contact_atom)  # (S, L)
+        return contacts.mean(axis=0)                       # (L,)
+
     def intra_contact_score(self, chain, contact_distance=14.0,
                            min_resi_distance=10, num_contacts=25):
         return self.chain_contact_score(
@@ -179,7 +214,6 @@ class AF3LikeResult(eqx.Module):
         return self.data["features"]["mol_type"][0]
 
     def _transform_sampled(self, sampled_property, num_atoms=24):
-        print(sampled_property.shape)
         if self.is_single_sample:
             sampled_property = sampled_property[0]
         else:

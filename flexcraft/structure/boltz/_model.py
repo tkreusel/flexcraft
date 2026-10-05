@@ -370,6 +370,20 @@ class Joltz2:
                                    writer=joltz_writer)#Joltz2Writer(**writer_spec))
         return _predict
 
+    def input_predictor(self, num_recycle=2, num_samples=1,
+                        num_sampling_steps=25, deterministic=False):
+        # like predictor, but runs on a JoltzInput directly (e.g. after set_template)
+        # instead of building it from a JoltzSpec.
+        jit_predict = eqx.filter_jit(Joltz2Evaluator(
+            joltz=self.model,
+            num_recycle=num_recycle,
+            num_sampling_steps=num_sampling_steps,
+            deterministic=deterministic)._predict)
+        def _predict(key, joltz_input: JoltzInput, joltz_writer=None):
+            prediction = jit_predict(key, joltz_input.features, num_samples=num_samples)
+            return JoltzPrediction(data=prediction.data, writer=joltz_writer)
+        return _predict
+
 class Joltz2Evaluator(eqx.Module):
     joltz: Any
     num_recycle: int = 3
