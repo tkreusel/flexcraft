@@ -124,7 +124,12 @@ class ProtenixEvaluator(eqx.Module):
     def structure_module(self, key, state, features, embedding,
                          num_samples=1, sampling_steps=25, parallel=False):
         def single_sample(carry, key):
-            sample: jax.Array = self.model.sample_structures(
+            # self.sample_structures, NOT self.model.sample_structures: the
+            # override defined below exists to fix the diffusion numerics, and
+            # calling through self.model bypasses it entirely (upstream's
+            # sampler then fails with "unsupported operand type(s) for *:
+            # 'tuple' and 'DynamicJaxprTracer'").
+            sample: jax.Array = self.sample_structures(
                 initial_embedding=embedding,
                 trunk_embedding=state,
                 input_feature_dict=features,

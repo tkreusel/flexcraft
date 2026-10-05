@@ -455,8 +455,10 @@ def _run_msa_search(sequences: Sequence[str], msa_dir: str, email: str = "") -> 
 
 class ProtenixInput(ModelInput):
     features: dict
-    def set_aa(self, sequence, start=0):
-        return self._set_sequence(sequence, start=start, seq_slice=slice(0, 20), seq_count=20)
+    # set_aa is inherited: ModelInput.set_aa dispatches to the _set_sequence
+    # override below, which writes the Protenix-layout features["restype"]
+    # (L, 32) rather than the Boltz-layout features["res_type"], and keeps
+    # features["profile"] in step with the sequence.
 
     def set_rna(self, sequence, start=0):
         return self._set_sequence(sequence, start=start, seq_slice=slice(21, 25), seq_count=4)
@@ -528,22 +530,35 @@ class ProtenixInput(ModelInput):
             mask = _mask
             coords = _coords
         ncacocb = positions_to_ncacocb(coords)
-        pb_mask = mask
-        bb_mask = mask
-        pseudo_beta = jnp.where((restype == aas.AF2_CODE.index("G"))[:, None], ncacocb[:, 1], ncacocb[:, 4])
+        
+        restype_arr = jnp.asarray(restype)
+        if restype_arr.ndim > 1:
+            restype_arr = jnp.argmax(restype_arr, axis=-1)
+        assert restype_arr.ndim == 1 and restype_arr.shape[0] == num_protein, (
+            f"restype must reduce to one index per token: "
+            f"{jnp.asarray(restype).shape} -> {restype_arr.shape}, "
+            f"expected ({num_protein},)")
+        restype_index = restype_arr.astype(jnp.int32)
+        # glycine has no CB, so fall back to CA for those residues
+        pseudo_beta = jnp.where((restype_index == aas.AF2_CODE.index("G"))[:, None],
+                                ncacocb[:, 1], ncacocb[:, 4])
         dist = jnp.linalg.norm(pseudo_beta[:, None] - pseudo_beta[None, :], axis=-1)
         min_bin: float = 3.25
         max_bin: float = 50.75
         bin_edges = jnp.linspace(min_bin, max_bin, 39)
         bin_edges = jnp.concatenate((bin_edges, jnp.array([1e8])), axis=-1)
-        dgram = (dist > bin_edges[:-1]) * (dist < bin_edges[1:]) > 0
-        unit_vectors = compute_unit_vector(coords, mask)
+
+        dgram = ((dist[..., None] > bin_edges[:-1])
+                 * (dist[..., None] < bin_edges[1:])) > 0
+
+        unit_vectors, mask_2d = compute_unit_vector(coords, mask)
+
         template_features = {
-            "template_aatype": restype,
-            "template_distogram": dgram,
-            "template_pseudo_beta_mask": pb_mask,
-            "template_unit_vector": unit_vectors,
-            "template_backbone_frame_mask": bb_mask,
+            "template_aatype": restype_index[None].astype(jnp.int32),
+            "template_distogram": dgram[None].astype(jnp.float32),
+            "template_pseudo_beta_mask": mask_2d[None].astype(jnp.float32),
+            "template_unit_vector": unit_vectors[None].astype(jnp.float32),
+            "template_backbone_frame_mask": mask_2d[None].astype(jnp.float32),
         }
         result = self.copy()
         result.features.update(template_features)
